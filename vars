@@ -1,0 +1,11 @@
+package_list:
+  - java-1.8.0-amazon-corretto-jdk
+  - net-tools
+  - bmon
+  - htop
+
+nexus_download_link: https://download.sonatype.com/nexus/3/nexus-3.70.1-02-java8-unix.tar.gz
+
+ssl_enabled: true
+nexus_domain: nexus.afsharnet.ir
+email_for_ssl: afshari.devops@gmail.com

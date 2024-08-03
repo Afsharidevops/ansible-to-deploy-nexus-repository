@@ -1,0 +1,251 @@
+---
+# ------------Nexus Install Section -------------
+- name: Install requirements
+  hosts: nexus_hosts
+  vars_files:
+    - vars
+  tasks:
+    - name: Update apt cache and upgrade packages
+      apt:
+        update_cache: yes
+        force_apt_get: yes
+        cache_valid_time: 3600
+        upgrade: full
+
+    - name: Remove old keyrings
+      file:
+        path: /usr/share/keyrings/corretto-keyring.gpg
+        state: absent
+    - name: Add repository for Java
+      shell: |
+        wget -O - https://apt.corretto.aws/corretto.key | gpg --dearmor -o /usr/share/keyrings/corretto-keyring.gpg && \
+        echo "deb [signed-by=/usr/share/keyrings/corretto-keyring.gpg] https://apt.corretto.aws stable main" | tee /etc/apt/sources.list.d/corretto.list
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install required packages
+      apt:
+        name: "{{ package_list }}"
+        state: present
+
+- name: Download & unpack Nexus installer
+  hosts: nexus_hosts
+  gather_facts: no
+  vars_files:
+    - vars
+  tasks:
+    - name: Download Nexus
+      get_url:
+        url: "{{ nexus_download_link }}"
+        dest: /opt/
+      register: download_result
+
+    - name: Check if Nexus directory exists
+      stat:
+        path: /opt/nexus
+      register: stat_result
+
+    - name: Unarchive Nexus installer
+      unarchive:
+        src: "{{ download_result.dest }}"
+        dest: /opt/
+        remote_src: yes
+      when: not stat_result.stat.exists
+
+    - name: Find and rename Nexus directory
+      block:
+        - name: Find Nexus directory
+          find:
+            path: /opt
+            pattern: "nexus-*"
+            file_type: directory
+          register: find_result
+
+        - name: Rename Nexus directory
+          shell: mv {{ find_result.files[0].path }} /opt/nexus
+          when: not stat_result.stat.exists
+
+- name: Create Nexus user to own Nexus folders
+  hosts: nexus_hosts
+  gather_facts: no
+  tasks:
+    - name: Ensure group Nexus exists
+      group:
+        name: nexus
+        state: present
+
+    - name: Create Nexus user
+      user:
+        name: nexus
+        group: nexus
+
+    - name: Make Nexus user owner of Nexus directory
+      file:
+        path: /opt/nexus
+        state: directory
+        owner: nexus
+        group: nexus
+        recurse: yes
+
+    - name: Make Nexus user owner of Sonatype-work directory
+      file:
+        path: /opt/sonatype-work
+        state: directory
+        owner: nexus
+        group: nexus
+        recurse: yes
+
+- name: Start Nexus with Nexus user
+  hosts: nexus_hosts
+  gather_facts: no
+  become: yes
+  become_user: nexus
+  tasks:
+    - name: Set run_as_user in Nexus configuration
+      lineinfile:
+        path: /opt/nexus/bin/nexus.rc
+        regexp: '^#run_as_user=""'
+        line: run_as_user="nexus"
+
+    - name: Start Nexus
+      command: /opt/nexus/bin/nexus start
+
+- name: Verify Nexus is running
+  hosts: nexus_hosts
+  gather_facts: no
+  tasks:
+    - name: Check Nexus process
+      shell: ps aux | grep -v grep | grep nexus
+      register: nexus_status
+
+    - debug:
+        msg: "{{ nexus_status.stdout_lines }}"
+
+    - name: Wait for Nexus to start
+      pause:
+        seconds: 60
+
+    - name: Check Nexus port 8081
+      shell: netstat -lnpt | grep 8081
+      register: nexus_status
+
+    - debug:
+        msg: "{{ nexus_status.stdout_lines }}"
+
+# ------------SSL Section -------------
+- name: Setup Nexus with optional Let's Encrypt SSL
+  hosts: nexus_hosts
+  gather_facts: no
+  become: yes
+  vars_files:
+    - vars
+  tasks:
+    - name: Debug SSL variables
+      debug:
+        msg:
+          - "ssl_enabled: {{ ssl_enabled }}"
+          - "nexus_domain: {{ nexus_domain }}"
+          - "email_for_ssl: {{ email_for_ssl }}"
+      when: ssl_enabled
+
+    - name: Install required packages for SSL
+      apt:
+        name:
+          - certbot
+          - python3-certbot-nginx
+          - nginx
+        state: present
+      when: ssl_enabled
+
+    - name: Stop Nginx service
+      service:
+        name: nginx
+        state: stopped
+      when: ssl_enabled
+
+    - name: Stop Nexus service
+      command: /opt/nexus/bin/nexus stop
+      when: ssl_enabled
+
+    - name: Obtain Let's Encrypt certificate
+      command: certbot certonly --standalone -d {{ nexus_domain }} --non-interactive --agree-tos -m {{ email_for_ssl }}
+      register: certbot_result
+      when: ssl_enabled
+
+    - debug:
+        msg: "{{ certbot_result.stdout }}"
+      when: ssl_enabled
+
+    - name: Start Nexus service
+      command: /opt/nexus/bin/nexus start
+      when: ssl_enabled
+
+    - name: Start Nginx service
+      service:
+        name: nginx
+        state: started
+      when: ssl_enabled
+
+    - name: Configure Nginx for Nexus with SSL
+      blockinfile:
+        path: /etc/nginx/sites-available/nexus
+        create: yes
+        block: |
+          server {
+              listen 80;
+              server_name {{ nexus_domain }};
+
+              location /.well-known/acme-challenge/ {
+                  root /var/www/html;
+              }
+
+              location / {
+                  return 301 https://$host$request_uri;
+              }
+          }
+
+          server {
+              listen 443 ssl;
+              server_name {{ nexus_domain }};
+
+              ssl_certificate /etc/letsencrypt/live/{{ nexus_domain }}/fullchain.pem;
+              ssl_certificate_key /etc/letsencrypt/live/{{ nexus_domain }}/privkey.pem;
+
+              location / {
+                  proxy_pass http://127.0.0.1:8081;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+          }
+      when: ssl_enabled
+
+    - name: Enable Nginx config for Nexus
+      file:
+        src: /etc/nginx/sites-available/nexus
+        dest: /etc/nginx/sites-enabled/nexus
+        state: link
+      when: ssl_enabled
+
+    - name: Test Nginx configuration
+      command: nginx -t
+      register: nginx_test_result
+      failed_when: nginx_test_result.rc != 0
+      when: ssl_enabled
+
+    - name: Reload Nginx
+      service:
+        name: nginx
+        state: reloaded
+      when: ssl_enabled and nginx_test_result.rc == 0
+
+    - name: Ensure Certbot auto-renewal is enabled
+      cron:
+        name: "Renew Let's Encrypt certificates"
+        minute: "0"
+        hour: "3"
+        job: "certbot renew --quiet --renew-hook 'systemctl reload nginx'"
+      when: ssl_enabled
