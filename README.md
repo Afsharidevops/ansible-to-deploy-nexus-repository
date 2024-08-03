@@ -30,9 +30,9 @@ cd ansible-to-deploy-nexus-repository/
 
 ### Hosts File
 
+replace your server ip address with 0.0.0.0 on hosts file.
 ```
 vim hosts
-replace your server ip address with 0.0.0.0 on hosts file.
 ```
 
 ### Vars File
