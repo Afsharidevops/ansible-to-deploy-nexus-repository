@@ -1,4 +1,4 @@
-## Deploy Nexus Repositoyi with Ansible (Debian and Ubuntu)
+## Deploy Nexus Repositoy with Ansible (Debian and Ubuntu)
 
 ## Intro
 
