@@ -30,16 +30,16 @@ cd ansible-to-deploy-nexus-repository/
 
 ### Hosts File
 
-replace your server ip address with 0.0.0.0 on hosts file.
 ```
 vim hosts
+replace your server ip address with 0.0.0.0 on hosts file.
 ```
 
 ### Vars File
 
+change content for your repository or add your Requirement packages to install: Packages, Enable SSL, Domain name, ...  
 ```
 vim vars
-change content for your repository or add your Requirement packages to install: Packages, Enable SSL, Domain name, ...  
 ```
 ### Run ansible
 
